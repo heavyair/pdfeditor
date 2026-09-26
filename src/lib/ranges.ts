@@ -1,6 +1,6 @@
 /**
  * Page-range parsing. Input is 1-based ("1-3, 5, 8-"), output is 0-based.
- * Throws an Error with a human readable message on bad input.
+ * Throws RANGE_* error codes on bad input (translated by errorText in i18n.tsx).
  */
 function parseSegment(seg: string, count: number): number[] {
   const s = seg.trim()
@@ -13,10 +13,10 @@ function parseSegment(seg: string, count: number): number[] {
   } else if (/^\d+$/.test(s)) {
     from = to = parseInt(s, 10)
   } else {
-    throw new Error(`"${s}" is not a valid page range`)
+    throw new Error(`RANGE_INVALID:${s}`)
   }
   if (from < 1 || to < 1 || from > count || to > count) {
-    throw new Error(`"${s}" is outside 1–${count}`)
+    throw new Error(`RANGE_OUTSIDE:${s}:${count}`)
   }
   const out: number[] = []
   const step = from <= to ? 1 : -1
@@ -36,7 +36,7 @@ export function parseRangeGroups(input: string, count: number): number[][] {
     .split(',')
     .map((seg) => parseSegment(seg, count))
     .filter((g) => g.length > 0)
-  if (!groups.length) throw new Error('Enter at least one page range')
+  if (!groups.length) throw new Error('RANGE_EMPTY')
   return groups
 }
 

@@ -1,24 +1,27 @@
-import { CSS_FONT, LINE_HEIGHT } from './fonts'
-import type { TextAnnot } from './types'
+import { CSS_FONT } from './fonts'
+import type { LineRasterizer } from './textLayer'
 
 const SCALE = 4
 
-/** Draw a text annotation to a transparent PNG, for scripts the standard PDF fonts can't encode. */
-export async function rasterizeText(a: TextAnnot): Promise<{ src: string; w: number; h: number }> {
-  const fontCss = `${a.italic ? 'italic ' : ''}${a.bold ? 'bold ' : ''}${a.fontSize}px ${CSS_FONT[a.font]}`
-  const lines = a.text.split('\n')
+/** Draw one line of text to a transparent PNG, for glyphs no embeddable font has (emoji...). */
+export const rasterizeLine: LineRasterizer = async (t) => {
+  const font = t.font ?? 'Helvetica'
+  const fontCss = `${t.italic ? 'italic ' : ''}${t.bold ? 'bold ' : ''}${t.size}px ${CSS_FONT[font]}`
   const probe = document.createElement('canvas').getContext('2d')!
   probe.font = fontCss
-  const w = Math.max(1, ...lines.map((l) => probe.measureText(l).width)) + 2
-  const h = lines.length * a.fontSize * LINE_HEIGHT
+  const m = probe.measureText(t.str)
+  const ascent = Math.max(m.actualBoundingBoxAscent, t.size * 0.9)
+  const descent = Math.max(m.actualBoundingBoxDescent, t.size * 0.25)
+  const w = Math.max(1, m.width) + 2
+  const h = ascent + descent
   const c = document.createElement('canvas')
   c.width = Math.ceil(w * SCALE)
   c.height = Math.ceil(h * SCALE)
   const ctx = c.getContext('2d')!
   ctx.scale(SCALE, SCALE)
   ctx.font = fontCss
-  ctx.fillStyle = a.color
-  ctx.textBaseline = 'middle'
-  lines.forEach((l, i) => ctx.fillText(l, 0, (i + 0.5) * a.fontSize * LINE_HEIGHT))
-  return { src: c.toDataURL('image/png'), w, h }
+  ctx.fillStyle = t.color
+  ctx.textBaseline = 'alphabetic'
+  ctx.fillText(t.str, 0, ascent)
+  return { src: c.toDataURL('image/png'), w, h, ascent }
 }

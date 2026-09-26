@@ -3,12 +3,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FileDrop } from '../components/FileDrop'
 import { Icon } from '../components/Icon'
 import { useToast } from '../components/Toast'
+import { errorText, useI18n } from '../i18n'
 import { exportPdf } from '../lib/exportPdf'
-import { isPasswordError, openPdf, pageInfo, type PDFDocumentProxy } from '../lib/pdfjs'
-import { rasterizeText } from '../lib/rasterize'
+import { mu } from '../lib/mupdfClient'
+import type { FormValues } from '../lib/mupdfOps'
+import { createOcr, renderForOcr } from '../lib/ocr'
+import { extractFields, isPasswordError, openPdf, pageInfo, type PDFDocumentProxy } from '../lib/pdfjs'
+import { rasterizeLine } from '../lib/rasterize'
+import { STAMPS, renderStamp } from '../lib/stamps'
 import type { Annot, PageModel, Tool } from '../lib/types'
 import { baseName, downloadBytes, fileToEmbeddableDataUrl, readFileBytes, uid } from '../lib/util'
-import { PageView, type EditorApi, type Pending, type ToolOpts } from './PageView'
+import { Menu } from './Menu'
+import { OcrModal, type OcrRequest } from './OcrModal'
+import { PageView, type EditorApi, type Pending, type Rect, type ToolOpts } from './PageView'
 import { PropsPanel } from './PropsPanel'
 import { Sidebar } from './Sidebar'
 import { SignatureModal } from './SignatureModal'
@@ -20,61 +27,38 @@ interface Source {
   pdf: PDFDocumentProxy
 }
 
-const TOOLS: { id: Tool | 'sign' | 'image'; label: string; icon: string; key?: string }[] = [
+type ToolId = Tool | 'sign' | 'image'
+const MAIN_TOOLS: { id: ToolId; label: string; icon: string; key: string }[] = [
   { id: 'select', label: 'Select', icon: 'select', key: 'v' },
   { id: 'editText', label: 'Edit text', icon: 'editText', key: 'e' },
   { id: 'text', label: 'Add text', icon: 'text', key: 't' },
   { id: 'sign', label: 'Sign', icon: 'sign', key: 's' },
   { id: 'image', label: 'Image', icon: 'image', key: 'i' },
+]
+const MARK_TOOLS: { id: ToolId; label: string; icon: string; key: string }[] = [
   { id: 'whiteout', label: 'Whiteout', icon: 'whiteout', key: 'w' },
+  { id: 'redact', label: 'Redact', icon: 'redact', key: 'x' },
   { id: 'highlight', label: 'Highlight', icon: 'highlight', key: 'h' },
+  { id: 'draw', label: 'Draw', icon: 'draw', key: 'd' },
+  { id: 'link', label: 'Link', icon: 'link', key: 'k' },
+  { id: 'note', label: 'Comment', icon: 'note', key: 'c' },
+]
+const SHAPE_TOOLS: { id: Tool; label: string; icon: string; key: string }[] = [
   { id: 'rect', label: 'Rectangle', icon: 'rect', key: 'r' },
   { id: 'ellipse', label: 'Ellipse', icon: 'ellipse', key: 'o' },
-  { id: 'draw', label: 'Draw', icon: 'draw', key: 'd' },
+  { id: 'line', label: 'Line', icon: 'line', key: 'l' },
+  { id: 'arrow', label: 'Arrow', icon: 'arrow', key: 'a' },
 ]
-
+const ALL_TOOLS = [...MAIN_TOOLS, ...MARK_TOOLS, ...SHAPE_TOOLS]
 const ZOOMS = [0.5, 0.67, 0.8, 1, 1.25, 1.5, 2, 3]
 
-async function loadSource(file: File): Promise<{ source: Source; pages: PageModel[]; encrypted: boolean }> {
-  const bytes = await readFileBytes(file)
-  let pdf: PDFDocumentProxy | null = null
-  let password: string | undefined
-  for (;;) {
-    try {
-      pdf = await openPdf(bytes, password)
-      break
-    } catch (e) {
-      if (!isPasswordError(e)) throw new Error(`"${file.name}" is not a valid PDF`)
-      const p = window.prompt(`"${file.name}" is password protected. Enter the password:`)
-      if (p === null) throw new Error('Password required')
-      password = p
-    }
-  }
-  let encrypted = false
-  try {
-    await PDFDocument.load(bytes, { updateMetadata: false })
-  } catch (e) {
-    encrypted = /encrypt/i.test(String((e as Error)?.message ?? e))
-  }
-  const id = uid()
-  const infos = await Promise.all(Array.from({ length: pdf.numPages }, (_, i) => pageInfo(pdf!, i)))
-  const pages: PageModel[] = infos.map((info, i) => ({
-    id: uid(),
-    srcId: id,
-    srcIndex: i,
-    width: info.width,
-    height: info.height,
-    baseRotation: info.rotation,
-    rotation: 0,
-    annots: [],
-  }))
-  return { source: { id, name: file.name, bytes, pdf }, pages, encrypted }
-}
+export type EditorMode = 'edit' | 'sign' | 'fill' | 'redact' | 'organize'
 
 const cloneAnnot = (a: Annot, dx = 0, dy = 0): Annot => ({ ...a, id: uid(), x: a.x + dx, y: a.y + dy })
 
-export function Editor({ startWithSignature }: { startWithSignature?: boolean }) {
+export function Editor({ mode = 'edit' }: { mode?: EditorMode }) {
   const toast = useToast()
+  const { t, lang } = useI18n()
   const [sources, setSources] = useState<Source[]>([])
   const [pages, setPagesState] = useState<PageModel[]>([])
   const [fileName, setFileName] = useState('document.pdf')
@@ -89,11 +73,17 @@ export function Editor({ startWithSignature }: { startWithSignature?: boolean })
   const [showSig, setShowSig] = useState(false)
   const [current, setCurrent] = useState(0)
   const [histSize, setHistSize] = useState<[number, number]>([0, 0])
+  const [formValues, setFormValues] = useState<Record<string, FormValues>>({})
+  const [flattenForms, setFlattenForms] = useState(false)
+  const [search, setSearch] = useState<{ open: boolean; query: string; busy: boolean; hits: { pageId: string; rects: Rect[] }[]; active: number } | null>(null)
+  const [ocr, setOcr] = useState<{ progress: { done: number; total: number; status: string } | null } | null>(null)
   const pagesRef = useRef<PageModel[]>([])
   const history = useRef<{ past: PageModel[][]; future: PageModel[][] }>({ past: [], future: [] })
   const scroller = useRef<HTMLDivElement>(null)
   const imageInput = useRef<HTMLInputElement>(null)
+  const searchInput = useRef<HTMLInputElement>(null)
 
+  const syncHist = () => setHistSize([history.current.past.length, history.current.future.length])
   const setPages = useCallback((next: PageModel[]) => {
     pagesRef.current = next
     setPagesState(next)
@@ -102,7 +92,7 @@ export function Editor({ startWithSignature }: { startWithSignature?: boolean })
     history.current.past.push(pagesRef.current)
     if (history.current.past.length > 200) history.current.past.shift()
     history.current.future = []
-    setHistSize([history.current.past.length, history.current.future.length])
+    syncHist()
   }, [])
   const commit = useCallback(
     (next: PageModel[]) => {
@@ -118,7 +108,7 @@ export function Editor({ startWithSignature }: { startWithSignature?: boolean })
     h.future.push(pagesRef.current)
     setPages(prev)
     setEditingId(null)
-    setHistSize([history.current.past.length, history.current.future.length])
+    syncHist()
   }, [setPages])
   const redo = useCallback(() => {
     const h = history.current
@@ -126,13 +116,10 @@ export function Editor({ startWithSignature }: { startWithSignature?: boolean })
     if (!next) return
     h.past.push(pagesRef.current)
     setPages(next)
-    setHistSize([history.current.past.length, history.current.future.length])
+    syncHist()
   }, [setPages])
 
-  const mapPage = useCallback(
-    (pageId: string, fn: (p: PageModel) => PageModel) => pagesRef.current.map((p) => (p.id === pageId ? fn(p) : p)),
-    [],
-  )
+  const mapPage = useCallback((pageId: string, fn: (p: PageModel) => PageModel) => pagesRef.current.map((p) => (p.id === pageId ? fn(p) : p)), [])
 
   const fitWidth = useCallback((ps: PageModel[]) => {
     const el = scroller.current
@@ -142,23 +129,72 @@ export function Editor({ startWithSignature }: { startWithSignature?: boolean })
     setZoom(Math.round(z * 100) / 100)
   }, [])
 
+  /** Open a PDF; encrypted files are decrypted locally (with the password when needed) so they can be saved. */
+  const loadSource = async (file: File): Promise<{ source: Source; pages: PageModel[] }> => {
+    let bytes = await readFileBytes(file)
+    let password: string | undefined
+    for (;;) {
+      try {
+        const probe = await openPdf(bytes, password)
+        probe.loadingTask.destroy()
+        break
+      } catch (e) {
+        if (!isPasswordError(e)) throw new Error(t('"{name}" is not a valid PDF', { name: file.name }))
+        const p = window.prompt(t('"{name}" is password protected. Enter the password:', { name: file.name }))
+        if (p === null) throw new Error(t('Password required'))
+        password = p
+      }
+    }
+    let encrypted = !!password
+    if (!encrypted) {
+      try {
+        await PDFDocument.load(bytes, { updateMetadata: false })
+      } catch (e) {
+        encrypted = /encrypt/i.test(String((e as Error)?.message ?? e))
+      }
+    }
+    if (encrypted) bytes = await mu.decrypt(bytes, password ?? '')
+    const pdf = await openPdf(bytes)
+    const id = uid()
+    const infos = await Promise.all(Array.from({ length: pdf.numPages }, (_, i) => pageInfo(pdf, i)))
+    const fields = await Promise.all(Array.from({ length: pdf.numPages }, (_, i) => extractFields(pdf, i).catch(() => [])))
+    const ps: PageModel[] = infos.map((info, i) => ({
+      id: uid(),
+      srcId: id,
+      srcIndex: i,
+      width: info.width,
+      height: info.height,
+      view: info.view,
+      baseRotation: info.rotation,
+      rotation: 0,
+      annots: [],
+      fields: fields[i].length ? fields[i] : undefined,
+    }))
+    return { source: { id, name: file.name, bytes, pdf }, pages: ps }
+  }
+
   const openFile = async (file: File) => {
     setLoading(true)
     try {
-      const { source, pages: ps, encrypted } = await loadSource(file)
+      const { source, pages: ps } = await loadSource(file)
       sources.forEach((s) => s.pdf.loadingTask.destroy())
       setSources([source])
       history.current = { past: [], future: [] }
-      setHistSize([0, 0])
+      syncHist()
       setPages(ps)
+      setFormValues({})
+      setSearch(null)
       setFileName(file.name)
       setSelected(null)
-      setTool('select')
-      if (encrypted) toast('This PDF is encrypted. Viewing works, but saving may fail or lose content.', 'error')
+      setTool(mode === 'redact' ? 'redact' : 'select')
       requestAnimationFrame(() => fitWidth(ps))
-      if (startWithSignature) setShowSig(true)
+      if (mode === 'sign') setShowSig(true)
+      if (mode === 'redact') setSearch({ open: true, query: '', busy: false, hits: [], active: 0 })
+      const nFields = ps.reduce((n, p) => n + (p.fields?.length ?? 0), 0)
+      if (nFields) toast(t('This PDF has {n} fillable form fields.', { n: nFields }), 'info')
+      else if (mode === 'fill') toast(t('No fillable fields found: use "Add text" and the ✓ stamps to fill it in.'), 'info')
     } catch (e) {
-      toast((e as Error).message, 'error')
+      toast(errorText(t, e), 'error')
     } finally {
       setLoading(false)
     }
@@ -172,9 +208,9 @@ export function Editor({ startWithSignature }: { startWithSignature?: boolean })
       const next = [...pagesRef.current]
       next.splice(at, 0, ...ps)
       commit(next)
-      toast(`Inserted ${ps.length} page${ps.length > 1 ? 's' : ''} from ${file.name}`, 'success')
+      toast(t('Inserted {n} pages from {name}', { n: ps.length, name: file.name }), 'success')
     } catch (e) {
-      toast((e as Error).message, 'error')
+      toast(errorText(t, e), 'error')
     }
   }
 
@@ -194,8 +230,7 @@ export function Editor({ startWithSignature }: { startWithSignature?: boolean })
         if (selectId) setSelected({ pageId, annotId: selectId })
         if (edit && selectId) setEditingId(selectId)
       },
-      updateAnnot: (pageId, annotId, patch) =>
-        setPages(mapPage(pageId, (p) => ({ ...p, annots: p.annots.map((a) => (a.id === annotId ? ({ ...a, ...patch } as Annot) : a)) }))),
+      updateAnnot: (pageId, annotId, patch) => setPages(mapPage(pageId, (p) => ({ ...p, annots: p.annots.map((a) => (a.id === annotId ? ({ ...a, ...patch } as Annot) : a)) }))),
       removeAnnot: (pageId, annotId) => {
         commit(mapPage(pageId, (p) => ({ ...p, annots: p.annots.filter((a) => a.id !== annotId) })))
         setSelected((s) => (s?.annotId === annotId ? null : s))
@@ -206,6 +241,7 @@ export function Editor({ startWithSignature }: { startWithSignature?: boolean })
         setPending(null)
         setTool('select')
       },
+      setField: (srcId, name, value) => setFormValues((fv) => ({ ...fv, [srcId]: { ...fv[srcId], [name]: value } })),
     }),
     [checkpoint, commit, mapPage, setPages],
   )
@@ -216,6 +252,10 @@ export function Editor({ startWithSignature }: { startWithSignature?: boolean })
   }, [pages, selected])
 
   // ---------- page operations ----------
+  const goto = (i: number) => {
+    const el = scroller.current?.querySelectorAll<HTMLElement>('.page-outer')[i]
+    el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
   const pageOps = {
     move: (from: number, to: number) => {
       const next = [...pagesRef.current]
@@ -243,11 +283,8 @@ export function Editor({ startWithSignature }: { startWithSignature?: boolean })
       commit(next)
       requestAnimationFrame(() => goto(current + 1))
     },
-  }
-
-  const goto = (i: number) => {
-    const el = scroller.current?.querySelectorAll<HTMLElement>('.page-outer')[i]
-    el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    reverse: () => commit([...pagesRef.current].reverse()),
+    rotateAll: (delta: number) => commit(pagesRef.current.map((p) => ({ ...p, rotation: (p.rotation + delta + 360) % 360 }))),
   }
 
   const onScroll = () => {
@@ -284,7 +321,7 @@ export function Editor({ startWithSignature }: { startWithSignature?: boolean })
     )
   }
 
-  // ---------- images & signatures ----------
+  // ---------- images, signatures, stamps ----------
   const startPlacing = (src: string, width: number, height: number, targetWidth: number) => {
     const w = Math.min(targetWidth, width)
     setPending({ src, w, h: (height / width) * w })
@@ -296,11 +333,18 @@ export function Editor({ startWithSignature }: { startWithSignature?: boolean })
       const img = await fileToEmbeddableDataUrl(file)
       startPlacing(img.src, img.width * 0.75, img.height * 0.75, 260)
     } catch {
-      toast('That image format is not supported', 'error')
+      toast(t('That image format is not supported'), 'error')
     }
   }
+  const addDate = () => {
+    const p = pagesRef.current[current]
+    if (!p) return
+    const id = uid()
+    api.addAnnots(p.id, [{ id, type: 'text', x: p.width / 2 - 30, y: p.height / 3, text: new Date().toLocaleDateString(lang === 'zh' ? 'zh-CN' : undefined), fontSize: 12, color: '#000000', font: 'Helvetica', bold: false, italic: false }], id)
+    setTool('select')
+  }
 
-  const onToolClick = (id: Tool | 'sign' | 'image') => {
+  const onToolClick = (id: ToolId) => {
     setEditingId(null)
     if (id === 'sign') return setShowSig(true)
     if (id === 'image') return imageInput.current?.click()
@@ -309,14 +353,128 @@ export function Editor({ startWithSignature }: { startWithSignature?: boolean })
     if (id !== 'select' && id !== 'editText') setSelected(null)
   }
 
+  // ---------- search & redact ----------
+  const runSearch = async (query: string) => {
+    if (!query.trim()) return setSearch((s) => (s ? { ...s, hits: [], active: 0 } : s))
+    setSearch((s) => ({ open: true, query, busy: true, hits: s?.hits ?? [], active: 0 }))
+    try {
+      const hits: { pageId: string; rects: Rect[] }[] = []
+      for (const src of sources) {
+        const found = await mu.search(src.bytes, query)
+        for (const pm of pagesRef.current) {
+          if (pm.srcId !== src.id || !pm.view) continue
+          for (const h of found.filter((f) => f.page === pm.srcIndex)) {
+            hits.push({
+              pageId: pm.id,
+              rects: h.rects.map(([x0, y0, x1, y1]) => ({ x: x0 - pm.view![0], y: pm.view![3] - y1, w: x1 - x0, h: y1 - y0 })),
+            })
+          }
+        }
+      }
+      // keep document order
+      const order = new Map(pagesRef.current.map((p, i) => [p.id, i]))
+      hits.sort((a, b) => order.get(a.pageId)! - order.get(b.pageId)! || a.rects[0].y - b.rects[0].y)
+      setSearch({ open: true, query, busy: false, hits, active: 0 })
+      if (hits.length) gotoHit(hits, 0)
+    } catch (e) {
+      setSearch((s) => (s ? { ...s, busy: false } : s))
+      toast(errorText(t, e), 'error')
+    }
+  }
+  const gotoHit = (hits: { pageId: string; rects: Rect[] }[], i: number) => {
+    const idx = pagesRef.current.findIndex((p) => p.id === hits[i]?.pageId)
+    if (idx >= 0) goto(idx)
+  }
+  const markHits = (kind: 'redact' | 'highlight') => {
+    if (!search?.hits.length) return
+    const byPage = new Map<string, Annot[]>()
+    for (const h of search.hits) {
+      const list = byPage.get(h.pageId) ?? []
+      for (const r of h.rects) {
+        const pad = kind === 'redact' ? 1 : 0.5
+        list.push(
+          kind === 'redact'
+            ? { id: uid(), type: 'rect', x: r.x - pad, y: r.y - pad, w: r.w + pad * 2, h: r.h + pad * 2, fill: '#000000', stroke: null, strokeWidth: 0, opacity: 1, redact: 'all' }
+            : { id: uid(), type: 'rect', x: r.x, y: r.y, w: r.w, h: r.h, fill: '#ffe14d', stroke: null, strokeWidth: 0, opacity: 0.5, highlight: true },
+        )
+      }
+      byPage.set(h.pageId, list)
+    }
+    commit(pagesRef.current.map((p) => (byPage.has(p.id) ? { ...p, annots: [...p.annots, ...byPage.get(p.id)!] } : p)))
+    toast(kind === 'redact' ? t('Marked {n} matches for redaction. They are removed when you download.', { n: search.hits.length }) : t('Highlighted {n} matches', { n: search.hits.length }), 'success')
+    setSearch((s) => (s ? { ...s, hits: [] } : s))
+  }
+  const hitsByPage = useMemo(() => {
+    const m = new Map<string, { rects: Rect[]; active?: number }>()
+    search?.hits.forEach((h, i) => {
+      const e = m.get(h.pageId) ?? { rects: [] }
+      if (i === search.active) e.active = e.rects.length
+      e.rects.push(...h.rects)
+      m.set(h.pageId, e)
+    })
+    return m
+  }, [search])
+
+  // ---------- OCR ----------
+  const startOcr = async (req: OcrRequest) => {
+    const targets: number[] = []
+    for (let i = 0; i < pagesRef.current.length; i++) {
+      const p = pagesRef.current[i]
+      const pdf = pdfFor(p.srcId)
+      if (!pdf) continue
+      if (req.scope === 'current' && i !== current) continue
+      if (req.scope === 'empty') {
+        const tc = await (await pdf.getPage(p.srcIndex + 1)).getTextContent()
+        if (tc.items.some((it) => 'str' in it && it.str.trim())) continue
+      }
+      targets.push(i)
+    }
+    if (!targets.length) {
+      setOcr(null)
+      toast(t('All pages already contain text. Choose "All pages" to run OCR anyway.'), 'info')
+      return
+    }
+    setOcr({ progress: { done: 0, total: targets.length, status: 'loading engine' } })
+    let engine
+    try {
+      let done = 0
+      engine = await createOcr(req.langs, (_p, status) => setOcr({ progress: { done, total: targets.length, status } }))
+      const results = new Map<string, NonNullable<PageModel['ocr']>>()
+      for (const i of targets) {
+        const p = pagesRef.current[i]
+        setOcr({ progress: { done, total: targets.length, status: 'recognizing text' } })
+        const { canvas, scale } = await renderForOcr(pdfFor(p.srcId)!, p.srcIndex)
+        const res = await engine.recognize(canvas, scale)
+        results.set(p.id, { words: res.words, lines: res.lines })
+        done++
+      }
+      commit(pagesRef.current.map((p) => (results.has(p.id) ? { ...p, ocr: results.get(p.id) } : p)))
+      const words = [...results.values()].reduce((n, r) => n + r.words.length, 0)
+      toast(t('Recognized {n} words on {p} pages. The text is searchable in the downloaded PDF.', { n: words, p: results.size }), 'success')
+    } catch (e) {
+      toast(t('OCR failed: {msg}', { msg: errorText(t, e) }), 'error')
+    } finally {
+      await engine?.terminate()
+      setOcr(null)
+    }
+  }
+
   // ---------- keyboard & paste ----------
   useEffect(() => {
-    const isField = (t: EventTarget | null) =>
-      t instanceof HTMLElement && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName))
+    // typing targets swallow shortcuts; checkboxes, radios and buttons don't
+    const isField = (el: EventTarget | null) =>
+      el instanceof HTMLElement &&
+      (el.isContentEditable || ['TEXTAREA', 'SELECT'].includes(el.tagName) || (el instanceof HTMLInputElement && !['checkbox', 'radio', 'button', 'range', 'color', 'file'].includes(el.type)))
     const onKey = (e: KeyboardEvent) => {
-      if (!pagesRef.current.length || showSig) return
-      if (isField(e.target)) return
+      if (!pagesRef.current.length || showSig || ocr) return
       const mod = e.ctrlKey || e.metaKey
+      if (mod && e.key.toLowerCase() === 'f') {
+        e.preventDefault()
+        setSearch((s) => ({ open: true, query: s?.query ?? '', busy: false, hits: s?.hits ?? [], active: s?.active ?? 0 }))
+        requestAnimationFrame(() => searchInput.current?.select())
+        return
+      }
+      if (isField(e.target)) return
       if (mod && e.key.toLowerCase() === 'z') {
         e.preventDefault()
         if (e.shiftKey) redo()
@@ -359,8 +517,8 @@ export function Editor({ startWithSignature }: { startWithSignature?: boolean })
         updateSelected({ x: selectedAnnot.x + dx, y: selectedAnnot.y + dy })
         return
       }
-      const t = TOOLS.find((x) => x.key === e.key.toLowerCase())
-      if (t) onToolClick(t.id)
+      const tl = ALL_TOOLS.find((x) => x.key === e.key.toLowerCase())
+      if (tl) onToolClick(tl.id)
     }
     const onPaste = (e: ClipboardEvent) => {
       if (!pagesRef.current.length || isField(e.target)) return
@@ -395,13 +553,13 @@ export function Editor({ startWithSignature }: { startWithSignature?: boolean })
       const bytes = await exportPdf(
         sources.map((s) => ({ id: s.id, bytes: s.bytes })),
         pagesRef.current,
-        rasterizeText,
+        { engine: mu, rasterize: rasterizeLine, formValues, flattenForms },
       )
       downloadBytes(bytes, `${baseName(fileName)}-edited.pdf`)
-      toast('Your PDF is ready', 'success')
+      toast(t('Your PDF is ready'), 'success')
     } catch (e) {
       console.error(e)
-      toast(`Could not save: ${(e as Error).message}`, 'error')
+      toast(t('Could not save: {msg}', { msg: errorText(t, e) }), 'error')
     } finally {
       setSaving(false)
     }
@@ -413,67 +571,182 @@ export function Editor({ startWithSignature }: { startWithSignature?: boolean })
     setZoom(next ?? ZOOMS[Math.max(0, i)])
   }
 
+  const titles: Record<EditorMode, [string, string]> = {
+    edit: ['Edit a PDF', 'Change existing text, add text, images, signatures, shapes, links and comments. Reorder, rotate and delete pages.'],
+    sign: ['Sign a PDF', 'Draw, type or upload your signature and place it anywhere on the document.'],
+    fill: ['Fill a PDF form', 'Type into fillable fields, tick boxes and sign. Works for flat forms too with text and ✓ stamps.'],
+    redact: ['Redact a PDF', 'Permanently remove sensitive text and images. Search for words to black them out everywhere at once.'],
+    organize: ['Organize pages', 'Drag to reorder, rotate, duplicate or delete pages, insert blank pages or pages from another PDF.'],
+  }
+
   if (!pages.length) {
     return (
       <div className="tool-page">
-        <h1>{startWithSignature ? 'Sign a PDF' : 'Edit a PDF'}</h1>
-        <p className="lead">
-          {startWithSignature
-            ? 'Draw, type or upload your signature and place it anywhere on the document.'
-            : 'Change existing text, add text, images, signatures, shapes and drawings. Reorder, rotate and delete pages.'}
-        </p>
-        <FileDrop accept="application/pdf,.pdf" title={loading ? 'Opening…' : 'Choose a PDF file'} hint="or drop it here · processed locally in your browser" onFiles={(f) => openFile(f[0])} />
+        <h1>{t(titles[mode][0])}</h1>
+        <p className="lead">{t(titles[mode][1])}</p>
+        <FileDrop accept="application/pdf,.pdf" title={loading ? t('Opening…') : t('Choose a PDF file')} hint={t('or drop it here · processed locally in your browser')} onFiles={(f) => openFile(f[0])} />
       </div>
     )
   }
 
   const [canUndo, canRedo] = [histSize[0] > 0, histSize[1] > 0]
+  const formCount = pages.reduce((n, p) => n + (p.fields?.length ?? 0), 0)
+  const shapeActive = SHAPE_TOOLS.find((s) => s.id === tool)
 
   return (
     <div className="editor">
       <div className="toolbar">
         <div className="tool-group">
-          {TOOLS.map((t) => (
-            <button
-              key={t.id}
-              className={`tool ${tool === t.id || (t.id === 'image' && tool === 'place' && !showSig) ? 'active' : ''}`}
-              onClick={() => onToolClick(t.id)}
-              title={`${t.label}${t.key ? ` (${t.key.toUpperCase()})` : ''}`}
-            >
-              <Icon name={t.icon} />
-              <span>{t.label}</span>
+          {MAIN_TOOLS.map((tl) => (
+            <button key={tl.id} className={`tool ${tool === tl.id || (tl.id === 'image' && tool === 'place' && !showSig) ? 'active' : ''}`} onClick={() => onToolClick(tl.id)} title={`${t(tl.label)} (${tl.key.toUpperCase()})`}>
+              <Icon name={tl.icon} />
+              <span>{t(tl.label)}</span>
             </button>
           ))}
+          <Menu label={t('Stamp')} icon="stamp">
+            {(close) => (
+              <>
+                {STAMPS.map((s) => {
+                  const label = lang === 'zh' ? s.zh : s.en
+                  return (
+                    <button
+                      key={s.id}
+                      className="menu-item"
+                      style={{ color: s.color }}
+                      onClick={() => {
+                        const img = renderStamp(s, label, s.kind === 'badge')
+                        startPlacing(img.src, img.w, img.h, img.w)
+                        close()
+                      }}
+                    >
+                      {label}
+                    </button>
+                  )
+                })}
+                <button
+                  className="menu-item"
+                  onClick={() => {
+                    addDate()
+                    close()
+                  }}
+                >
+                  📅 {t("Today's date")}
+                </button>
+              </>
+            )}
+          </Menu>
+          <span className="sep" />
+          {MARK_TOOLS.map((tl) => (
+            <button key={tl.id} className={`tool ${tool === tl.id ? 'active' : ''}`} onClick={() => onToolClick(tl.id)} title={`${t(tl.label)} (${tl.key.toUpperCase()})`}>
+              <Icon name={tl.icon} />
+              <span>{t(tl.label)}</span>
+            </button>
+          ))}
+          <Menu label={shapeActive ? t(shapeActive.label) : t('Shapes')} icon={shapeActive?.icon ?? 'shapes'} active={!!shapeActive}>
+            {(close) =>
+              SHAPE_TOOLS.map((s) => (
+                <button
+                  key={s.id}
+                  className="menu-item"
+                  onClick={() => {
+                    onToolClick(s.id)
+                    close()
+                  }}
+                >
+                  <Icon name={s.icon} size={16} /> {t(s.label)} <kbd>{s.key.toUpperCase()}</kbd>
+                </button>
+              ))
+            }
+          </Menu>
         </div>
         <div className="tool-group right">
-          <button className="icon-btn" onClick={undo} disabled={!canUndo} title="Undo (Ctrl+Z)" aria-label="Undo">
+          <button className={`icon-btn ${search?.open ? 'on' : ''}`} onClick={() => setSearch((s) => (s?.open ? null : { open: true, query: '', busy: false, hits: [], active: 0 }))} title={t('Search & redact (Ctrl+F)')} aria-label={t('Search')}>
+            <Icon name="search" />
+          </button>
+          <button className="icon-btn" onClick={() => setOcr({ progress: null })} title={t('Recognize text (OCR)')} aria-label="OCR">
+            <Icon name="ocr" />
+          </button>
+          <Menu label="" icon="organize" title={t('Page tools')}>
+            {(close) => (
+              <>
+                <button className="menu-item" onClick={() => (pageOps.rotateAll(90), close())}>
+                  <Icon name="rotateR" size={16} /> {t('Rotate all pages')}
+                </button>
+                <button className="menu-item" onClick={() => (pageOps.reverse(), close())}>
+                  <Icon name="reverse" size={16} /> {t('Reverse page order')}
+                </button>
+                <button className="menu-item" onClick={() => (pageOps.addBlank(), close())}>
+                  <Icon name="plus" size={16} /> {t('Insert blank page')}
+                </button>
+              </>
+            )}
+          </Menu>
+          <span className="sep" />
+          <button className="icon-btn" onClick={undo} disabled={!canUndo} title={t('Undo (Ctrl+Z)')} aria-label={t('Undo')}>
             <Icon name="undo" />
           </button>
-          <button className="icon-btn" onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Y)" aria-label="Redo">
+          <button className="icon-btn" onClick={redo} disabled={!canRedo} title={t('Redo (Ctrl+Y)')} aria-label={t('Redo')}>
             <Icon name="redo" />
           </button>
           <span className="sep" />
-          <button className="icon-btn" onClick={() => zoomStep(-1)} title="Zoom out" aria-label="Zoom out">
+          <button className="icon-btn" onClick={() => zoomStep(-1)} title={t('Zoom out')} aria-label={t('Zoom out')}>
             <Icon name="zoomOut" />
           </button>
-          <button className="zoom-label" onClick={() => fitWidth(pagesRef.current)} title="Fit width">
+          <button className="zoom-label" onClick={() => fitWidth(pagesRef.current)} title={t('Fit width')}>
             {Math.round(zoom * 100)}%
           </button>
-          <button className="icon-btn" onClick={() => zoomStep(1)} title="Zoom in" aria-label="Zoom in">
+          <button className="icon-btn" onClick={() => zoomStep(1)} title={t('Zoom in')} aria-label={t('Zoom in')}>
             <Icon name="zoomIn" />
           </button>
           <span className="sep" />
           <button className="btn primary" onClick={save} disabled={saving}>
-            <Icon name="download" /> {saving ? 'Saving…' : 'Download'}
+            <Icon name="download" /> {saving ? t('Saving…') : t('Download')}
           </button>
         </div>
       </div>
 
+      {search?.open && (
+        <form
+          className="searchbar"
+          onSubmit={(e) => {
+            e.preventDefault()
+            runSearch(search.query)
+          }}
+        >
+          <Icon name="search" size={16} />
+          <input ref={searchInput} className="input" autoFocus placeholder={t('Find text in the document…')} value={search.query} onChange={(e) => setSearch({ ...search, query: e.target.value })} />
+          <button className="btn small" type="submit" disabled={search.busy}>
+            {search.busy ? t('Searching…') : t('Find')}
+          </button>
+          {search.hits.length > 0 && (
+            <>
+              <span className="muted">{t('{a} of {b}', { a: search.active + 1, b: search.hits.length })}</span>
+              <button type="button" className="icon-btn" aria-label={t('Previous')} onClick={() => { const i = (search.active - 1 + search.hits.length) % search.hits.length; setSearch({ ...search, active: i }); gotoHit(search.hits, i) }}>
+                <Icon name="up" size={16} />
+              </button>
+              <button type="button" className="icon-btn" aria-label={t('Next')} onClick={() => { const i = (search.active + 1) % search.hits.length; setSearch({ ...search, active: i }); gotoHit(search.hits, i) }}>
+                <Icon name="down" size={16} />
+              </button>
+              <button type="button" className="btn small" onClick={() => markHits('highlight')}>
+                <Icon name="highlight" size={15} /> {t('Highlight all')}
+              </button>
+              <button type="button" className="btn small danger-solid" onClick={() => markHits('redact')}>
+                <Icon name="redact" size={15} /> {t('Redact all')}
+              </button>
+            </>
+          )}
+          {!search.busy && search.query && search.hits.length === 0 && <span className="muted">{t('No matches yet — press Enter to search')}</span>}
+          <button type="button" className="icon-btn close" aria-label={t('Close')} onClick={() => setSearch(null)}>
+            <Icon name="x" size={16} />
+          </button>
+        </form>
+      )}
+
       {tool === 'place' && pending && (
         <div className="banner">
-          Click on a page to place it.{' '}
+          {t('Click on a page to place it.')}{' '}
           <button className="link" onClick={() => api.consumePending()}>
-            Cancel
+            {t('Cancel')}
           </button>
         </div>
       )}
@@ -493,9 +766,9 @@ export function Editor({ startWithSignature }: { startWithSignature?: boolean })
         />
         <div className="pages" ref={scroller} onScroll={onScroll}>
           <div className="file-chip">
-            <Icon name="file" size={15} /> {fileName} · {pages.length} page{pages.length > 1 ? 's' : ''}
+            <Icon name="file" size={15} /> {fileName} · {t('{n} pages', { n: pages.length })}
             <label className="link">
-              Open another
+              {t('Open another')}
               <input
                 type="file"
                 accept="application/pdf,.pdf"
@@ -503,25 +776,31 @@ export function Editor({ startWithSignature }: { startWithSignature?: boolean })
                 onChange={(e) => {
                   const f = e.target.files?.[0]
                   e.target.value = ''
-                  if (f && (!history.current.past.length || window.confirm('Discard your current edits?'))) openFile(f)
+                  if (f && (!history.current.past.length || window.confirm(t('Discard your current edits?')))) openFile(f)
                 }}
               />
             </label>
           </div>
-          {pages.map((p) => (
-            <PageView
-              key={p.id}
-              page={p}
-              pdf={pdfFor(p.srcId)}
-              zoom={zoom}
-              tool={tool}
-              opts={opts}
-              pending={pending}
-              selectedId={selected?.pageId === p.id ? selected.annotId : null}
-              editingId={editingId}
-              api={api}
-            />
-          ))}
+          {pages.map((p) => {
+            const h = hitsByPage.get(p.id)
+            return (
+              <PageView
+                key={p.id}
+                page={p}
+                pdf={pdfFor(p.srcId)}
+                zoom={zoom}
+                tool={tool}
+                opts={opts}
+                pending={pending}
+                selectedId={selected?.pageId === p.id ? selected.annotId : null}
+                editingId={editingId}
+                api={api}
+                formValues={p.srcId ? formValues[p.srcId] : undefined}
+                hits={h?.rects}
+                activeHit={h?.active}
+              />
+            )
+          })}
         </div>
         <PropsPanel
           annot={selectedAnnot}
@@ -532,6 +811,10 @@ export function Editor({ startWithSignature }: { startWithSignature?: boolean })
           onDelete={deleteSelected}
           onDuplicate={duplicateSelected}
           onLayer={layerSelected}
+          formCount={formCount}
+          flattenForms={flattenForms}
+          setFlattenForms={setFlattenForms}
+          pageCount={pages.length}
         />
       </div>
 
@@ -555,6 +838,7 @@ export function Editor({ startWithSignature }: { startWithSignature?: boolean })
           }}
         />
       )}
+      {ocr && <OcrModal progress={ocr.progress} onClose={() => setOcr(null)} onStart={startOcr} />}
     </div>
   )
 }

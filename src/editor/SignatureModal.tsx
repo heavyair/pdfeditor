@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Icon } from '../components/Icon'
+import { useT } from '../i18n'
 import { fileToEmbeddableDataUrl, loadImage } from '../lib/util'
 
 export interface SignatureResult {
@@ -55,6 +56,7 @@ function trimCanvas(c: HTMLCanvasElement, pad = 6): SignatureResult | null {
 }
 
 export function SignatureModal({ onClose, onUse }: { onClose: () => void; onUse: (s: SignatureResult) => void }) {
+  const t = useT()
   const [tab, setTab] = useState<'draw' | 'type' | 'upload'>('draw')
   const [ink, setInk] = useState(INK[0])
   const [saved, setSaved] = useState<SignatureResult[]>(loadSaved)
@@ -140,26 +142,26 @@ export function SignatureModal({ onClose, onUse }: { onClose: () => void; onUse:
 
   return (
     <div className="modal-backdrop" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal" role="dialog" aria-modal="true" aria-label="Create signature">
+      <div className="modal" role="dialog" aria-modal="true" aria-label={t('Add signature')}>
         <div className="modal-head">
-          <h2>Add signature</h2>
-          <button className="icon-btn" onClick={onClose} aria-label="Close">
+          <h2>{t('Add signature')}</h2>
+          <button className="icon-btn" onClick={onClose} aria-label={t('Close')}>
             <Icon name="x" />
           </button>
         </div>
 
         {saved.length > 0 && (
           <div className="saved-sigs">
-            <div className="label">Saved on this device</div>
+            <div className="label">{t('Saved on this device')}</div>
             <div className="saved-row">
               {saved.map((s, i) => (
                 <div key={i} className="saved-sig">
-                  <button onClick={() => onUse(s)} title="Use this signature">
-                    <img src={s.src} alt="Saved signature" />
+                  <button onClick={() => onUse(s)} title={t('Use this signature')}>
+                    <img src={s.src} alt={t('Saved signature')} />
                   </button>
                   <button
                     className="saved-del"
-                    aria-label="Delete saved signature"
+                    aria-label={t('Delete saved signature')}
                     onClick={() => {
                       const next = saved.filter((_, k) => k !== i)
                       setSaved(next)
@@ -175,23 +177,23 @@ export function SignatureModal({ onClose, onUse }: { onClose: () => void; onUse:
         )}
 
         <div className="tabs">
-          {(['draw', 'type', 'upload'] as const).map((t) => (
-            <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>
-              {t === 'draw' ? 'Draw' : t === 'type' ? 'Type' : 'Upload image'}
+          {(['draw', 'type', 'upload'] as const).map((k) => (
+            <button key={k} className={tab === k ? 'active' : ''} onClick={() => setTab(k)}>
+              {k === 'draw' ? t('Draw') : k === 'type' ? t('Type') : t('Upload image')}
             </button>
           ))}
         </div>
 
         {tab !== 'upload' && (
           <div className="ink-row">
-            <span className="label">Ink</span>
+            <span className="label">{t('Ink')}</span>
             {INK.map((c) => (
               <button
                 key={c}
                 className={`swatch ${ink === c ? 'active' : ''}`}
                 style={{ background: c }}
                 onClick={() => setInk(c)}
-                aria-label={`Ink color ${c}`}
+                aria-label={c}
               />
             ))}
           </div>
@@ -240,11 +242,11 @@ export function SignatureModal({ onClose, onUse }: { onClose: () => void; onUse:
                   setHasInk(false)
                 }}
               >
-                Clear
+                {t('Clear')}
               </button>
               <Remember value={remember} onChange={setRemember} />
               <button className="btn primary" disabled={!hasInk} onClick={useDrawn}>
-                Use signature
+                {t('Use signature')}
               </button>
             </div>
           </>
@@ -254,7 +256,7 @@ export function SignatureModal({ onClose, onUse }: { onClose: () => void; onUse:
           <>
             <input
               className="input big"
-              placeholder="Type your name"
+              placeholder={t('Type your name')}
               value={typed}
               autoFocus
               onChange={(e) => setTyped(e.target.value)}
@@ -267,7 +269,7 @@ export function SignatureModal({ onClose, onUse }: { onClose: () => void; onUse:
                   style={{ fontFamily: `"${f}", cursive`, color: ink }}
                   onClick={() => setScriptFont(f)}
                 >
-                  {typed || 'Your Name'}
+                  {typed || t('Your Name')}
                 </button>
               ))}
             </div>
@@ -275,7 +277,7 @@ export function SignatureModal({ onClose, onUse }: { onClose: () => void; onUse:
               <span />
               <Remember value={remember} onChange={setRemember} />
               <button className="btn primary" disabled={!typed.trim()} onClick={useTyped}>
-                Use signature
+                {t('Use signature')}
               </button>
             </div>
           </>
@@ -284,7 +286,7 @@ export function SignatureModal({ onClose, onUse }: { onClose: () => void; onUse:
         {tab === 'upload' && (
           <>
             <label className="upload-box">
-              {upload ? <img src={upload.src} alt="Uploaded signature" /> : <span>Choose a photo or scan of your signature</span>}
+              {upload ? <img src={upload.src} alt="" /> : <span>{t('Choose a photo or scan of your signature')}</span>}
               <input
                 type="file"
                 accept="image/*"
@@ -300,13 +302,13 @@ export function SignatureModal({ onClose, onUse }: { onClose: () => void; onUse:
             </label>
             <label className="check">
               <input type="checkbox" checked={removeBg} onChange={(e) => setRemoveBg(e.target.checked)} />
-              Remove white background
+              {t('Remove white background')}
             </label>
             <div className="modal-foot">
               <span />
               <Remember value={remember} onChange={setRemember} />
               <button className="btn primary" disabled={!upload} onClick={useUpload}>
-                Use signature
+                {t('Use signature')}
               </button>
             </div>
           </>
@@ -317,10 +319,11 @@ export function SignatureModal({ onClose, onUse }: { onClose: () => void; onUse:
 }
 
 function Remember({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
+  const t = useT()
   return (
     <label className="check">
       <input type="checkbox" checked={value} onChange={(e) => onChange(e.target.checked)} />
-      Save on this device
+      {t('Save on this device')}
     </label>
   )
 }

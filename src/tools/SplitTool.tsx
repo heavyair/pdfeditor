@@ -4,6 +4,7 @@ import { FileDrop } from '../components/FileDrop'
 import { Icon } from '../components/Icon'
 import { PdfCanvas } from '../components/PdfCanvas'
 import { useToast } from '../components/Toast'
+import { errorText, useT } from '../i18n'
 import { splitPdf } from '../lib/pageOps'
 import { openPdf, pageInfo, type PDFDocumentProxy } from '../lib/pdfjs'
 import { chunkPages, describeGroup, parseRangeGroups } from '../lib/ranges'
@@ -19,6 +20,7 @@ interface Doc {
 }
 
 export function SplitTool() {
+  const t = useT()
   const toast = useToast()
   const [doc, setDoc] = useState<Doc | null>(null)
   const [mode, setMode] = useState<Mode>('select')
@@ -38,7 +40,7 @@ export function SplitTool() {
       const half = Math.ceil(pdf.numPages / 2)
       setRanges(pdf.numPages > 1 ? `${describeGroup(chunkPages(half, half)[0])}, ${half + 1 === pdf.numPages ? half + 1 : `${half + 1}-${pdf.numPages}`}` : '1')
     } catch {
-      toast(`Could not open "${f.name}"`, 'error')
+      toast(t('Could not open "{name}"', { name: f.name }), 'error')
     }
   }
 
@@ -81,9 +83,9 @@ export function SplitTool() {
         outs.forEach((b, i) => zip.file(`${base}-${String(i + 1).padStart(2, '0')}-pages-${describeGroup(plan.groups[i])}.pdf`, b))
         downloadBytes(await zip.generateAsync({ type: 'blob' }), `${base}-split.zip`, 'application/zip')
       }
-      toast(`Created ${outs.length} PDF${outs.length > 1 ? 's' : ''}`, 'success')
+      toast(t('Created {n} PDF files', { n: outs.length }), 'success')
     } catch (e) {
-      toast(`Split failed: ${(e as Error).message}`, 'error')
+      toast(t('Split failed: {msg}', { msg: (e as Error).message }), 'error')
     } finally {
       setBusy(false)
     }
@@ -92,9 +94,9 @@ export function SplitTool() {
   if (!doc) {
     return (
       <div className="tool-page">
-        <h1>Split PDF</h1>
-        <p className="lead">Extract pages or split one PDF into several files by ranges, every N pages, or one file per page.</p>
-        <FileDrop accept="application/pdf,.pdf" title="Choose a PDF file" hint="or drop it here" onFiles={(f) => open(f[0])} />
+        <h1>{t('Split PDF')}</h1>
+        <p className="lead">{t('Extract pages or split one PDF into several files by ranges, every N pages, or one file per page.')}</p>
+        <FileDrop accept="application/pdf,.pdf" title={t('Choose a PDF file')} hint={t('or drop it here')} onFiles={(f) => open(f[0])} />
       </div>
     )
   }
@@ -111,13 +113,13 @@ export function SplitTool() {
 
   return (
     <div className="tool-page wide">
-      <h1>Split PDF</h1>
+      <h1>{t('Split PDF')}</h1>
       <div className="split-head">
         <span className="file-chip static">
-          <Icon name="file" size={15} /> {doc.name} · {n} pages
+          <Icon name="file" size={15} /> {doc.name} · {t('{n} pages', { n })}
         </span>
         <label className="link">
-          Choose another file
+          {t('Choose another file')}
           <input type="file" accept="application/pdf,.pdf" hidden onChange={(e) => e.target.files?.[0] && open(e.target.files[0])} />
         </label>
       </div>
@@ -132,7 +134,7 @@ export function SplitTool() {
           ] as [Mode, string][]
         ).map(([m, label]) => (
           <button key={m} className={mode === m ? 'active' : ''} onClick={() => setMode(m)}>
-            {label}
+            {t(label)}
           </button>
         ))}
       </div>
@@ -140,26 +142,26 @@ export function SplitTool() {
       <div className="split-options">
         {mode === 'select' && (
           <>
-            <span className="muted">Click pages to select them. {picked.size} selected.</span>
-            <button className="btn small ghost" onClick={() => setPicked(new Set(Array.from({ length: n }, (_, i) => i)))}>Select all</button>
-            <button className="btn small ghost" onClick={() => setPicked(new Set())}>Clear</button>
+            <span className="muted">{t('Click pages to select them. {n} selected.', { n: picked.size })}</span>
+            <button className="btn small ghost" onClick={() => setPicked(new Set(Array.from({ length: n }, (_, i) => i)))}>{t('Select all')}</button>
+            <button className="btn small ghost" onClick={() => setPicked(new Set())}>{t('Clear')}</button>
           </>
         )}
         {mode === 'ranges' && (
           <>
-            <input className="input" style={{ minWidth: 260 }} value={ranges} onChange={(e) => setRanges(e.target.value)} placeholder="e.g. 1-3, 4-6, 7" aria-label="Page ranges" />
-            <span className="muted">Each comma-separated range becomes a separate PDF.</span>
+            <input className="input" style={{ minWidth: 260 }} value={ranges} onChange={(e) => setRanges(e.target.value)} placeholder={t('e.g. 1-3, 4-6, 7')} aria-label={t('Page ranges')} />
+            <span className="muted">{t('Each comma-separated range becomes a separate PDF.')}</span>
           </>
         )}
         {mode === 'every' && (
           <>
-            <span>Split every</span>
-            <input className="input" type="number" min={1} max={n} value={every} onChange={(e) => setEvery(parseInt(e.target.value, 10) || 1)} style={{ width: 80 }} aria-label="Pages per file" />
-            <span>pages</span>
+            <span>{t('Split every')}</span>
+            <input className="input" type="number" min={1} max={n} value={every} onChange={(e) => setEvery(parseInt(e.target.value, 10) || 1)} style={{ width: 80 }} aria-label={t('Pages per file')} />
+            <span>{t('pages')}</span>
           </>
         )}
-        {mode === 'single' && <span className="muted">Every page becomes its own PDF.</span>}
-        {plan.error && <span className="error-text">{plan.error}</span>}
+        {mode === 'single' && <span className="muted">{t('Every page becomes its own PDF.')}</span>}
+        {plan.error && <span className="error-text">{errorText(t, new Error(plan.error))}</span>}
       </div>
 
       <div className="split-grid">
@@ -182,7 +184,7 @@ export function SplitTool() {
               </div>
               <span className="split-num">
                 {i + 1}
-                {g !== undefined && mode !== 'select' && <em> → file {g + 1}</em>}
+                {g !== undefined && mode !== 'select' && <em> → {t('file {n}', { n: g + 1 })}</em>}
               </span>
               {mode === 'select' && picked.has(i) && (
                 <span className="split-check">
@@ -196,10 +198,10 @@ export function SplitTool() {
 
       <div className="action-bar sticky">
         <span className="muted">
-          {plan.groups.length ? `${plan.groups.length} output file${plan.groups.length > 1 ? 's' : ''}${plan.groups.length > 1 ? ' (ZIP)' : ''}` : 'Nothing selected'}
+          {plan.groups.length ? t(plan.groups.length > 1 ? '{n} output files (ZIP)' : '1 output file', { n: plan.groups.length }) : t('Nothing selected')}
         </span>
         <button className="btn primary" disabled={busy || !plan.groups.length} onClick={run}>
-          <Icon name="split" /> {busy ? 'Working…' : 'Split & download'}
+          <Icon name="split" /> {busy ? t('Working…') : t('Split & download')}
         </button>
       </div>
     </div>

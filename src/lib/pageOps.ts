@@ -1,6 +1,8 @@
 import { PDFDocument } from 'pdf-lib'
 import { dataUrlToBytes } from './util'
 
+export type ImagePageSize = 'a4' | 'letter' | 'fit'
+
 export interface MergeInput {
   kind: 'pdf' | 'image'
   bytes: Uint8Array
@@ -13,18 +15,20 @@ export interface MergeInput {
 }
 
 /** Merge PDFs (optionally a subset of pages each) and images (one page per image). */
-export async function mergePdfs(inputs: MergeInput[]): Promise<Uint8Array> {
+export async function mergePdfs(inputs: MergeInput[], imageOpts: { pageSize: ImagePageSize; margin: number } = { pageSize: 'a4', margin: 24 }): Promise<Uint8Array> {
   const out = await PDFDocument.create()
   for (const input of inputs) {
     if (input.kind === 'image') {
       const src = input.src!
       const bytes = dataUrlToBytes(src)
       const img = /^data:image\/jpe?g/i.test(src) ? await out.embedJpg(bytes) : await out.embedPng(bytes)
-      // fit image on an A4 page with a margin, keeping orientation
+      // fit image on the page with a margin, keeping orientation (72 dpi = 1 px per point)
+      const margin = imageOpts.margin
       const landscape = img.width > img.height
-      const [pw, ph] = landscape ? [841.89, 595.28] : [595.28, 841.89]
-      const margin = 24
-      const s = Math.min((pw - 2 * margin) / img.width, (ph - 2 * margin) / img.height, 1)
+      const base = imageOpts.pageSize === 'letter' ? [612, 792] : [595.28, 841.89]
+      const [pw, ph] =
+        imageOpts.pageSize === 'fit' ? [img.width * 0.75 + 2 * margin, img.height * 0.75 + 2 * margin] : landscape ? [base[1], base[0]] : base
+      const s = Math.min((pw - 2 * margin) / img.width, (ph - 2 * margin) / img.height, imageOpts.pageSize === 'fit' ? 0.75 : 1)
       const w = img.width * s
       const h = img.height * s
       const page = out.addPage([pw, ph])
