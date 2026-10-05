@@ -45,6 +45,10 @@ export const TOOLS: ToolEntry[] = [
   { route: 'images-to-pdf', title: 'Images to PDF', text: 'Turn photos and scans into a PDF.', icon: 'file', color: '#f76b15', group: 'convert', render: () => <MergeTool key="img" imagesOnly /> },
   { route: 'pdf-to-text', title: 'PDF to text', text: 'Extract all text as a .txt file.', icon: 'textFile', color: '#687076', group: 'convert', render: simple('pdf-to-text') },
   { route: 'extract-images', title: 'Extract images', text: 'Save every embedded picture at full quality.', icon: 'image', color: '#29a383', group: 'convert', render: simple('extract-images') },
+  { route: 'excel-to-pdf', title: 'Excel to PDF', text: 'Turn spreadsheets into PDF tables.', icon: 'grid', color: '#1f9d55', group: 'convert', render: simple('excel-to-pdf') },
+  { route: 'word-to-pdf', title: 'Word to PDF', text: 'Turn Word documents into PDF.', icon: 'textFile', color: '#2b579a', group: 'convert', render: simple('word-to-pdf') },
+  { route: 'pdf-to-excel', title: 'PDF to Excel', text: 'Extract tables into an .xlsx workbook.', icon: 'grid', color: '#0e7c3e', group: 'convert', render: simple('pdf-to-excel') },
+  { route: 'pdf-to-word', title: 'PDF to Word', text: 'Extract text into an editable .docx file.', icon: 'textFile', color: '#185abd', group: 'convert', render: simple('pdf-to-word') },
 
   { route: 'compress', title: 'Compress PDF', text: 'Make PDFs smaller for email and upload.', icon: 'compress', color: '#30a46c', group: 'secure', render: simple('compress') },
   { route: 'protect', title: 'Protect PDF', text: 'Add a password (AES-256) and permissions.', icon: 'lock', color: '#1c2024', group: 'secure', render: simple('protect') },

@@ -41,6 +41,12 @@ export interface ToolDef<O> {
   acceptsLocked?: boolean
   /** Repair accepts files pdf.js cannot open */
   acceptsBroken?: boolean
+  /** file input accept attribute; default "application/pdf,.pdf" */
+  accept?: string
+  /** drop-zone title; default 'Choose a PDF file' */
+  acceptTitle?: string
+  /** skip pdf.js parsing for non-PDF inputs (e.g. .xlsx / .docx) */
+  skipPdfParse?: boolean
   defaults: O | ((f: LoadedFile) => Promise<O>)
   Options?: (p: { value: O; set: (o: O) => void; file: LoadedFile; t: T }) => ReactNode
   validate?: (o: O, f: LoadedFile) => string | null
@@ -79,16 +85,21 @@ export function SimpleTool<O>({ def }: { def: ToolDef<O> }) {
       const bytes = await readFileBytes(f)
       let pdf: PDFDocumentProxy | null = null
       let locked = false
-      try {
-        pdf = await openPdf(bytes)
-      } catch (e) {
-        if (!isPasswordError(e)) {
-          if (!def.acceptsBroken) throw new Error(t('"{name}" is not a valid PDF', { name: f.name }))
-        } else locked = true
-        if (locked && !def.acceptsLocked) throw new Error(t('This PDF is password protected. Remove the password with the Unlock tool first.'))
+      let first: LoadedFile['first'] = null
+      let pageCount = 0
+      if (!def.skipPdfParse) {
+        try {
+          pdf = await openPdf(bytes)
+        } catch (e) {
+          if (!isPasswordError(e)) {
+            if (!def.acceptsBroken) throw new Error(t('"{name}" is not a valid PDF', { name: f.name }))
+          } else locked = true
+          if (locked && !def.acceptsLocked) throw new Error(t('This PDF is password protected. Remove the password with the Unlock tool first.'))
+        }
+        first = pdf ? await pageInfo(pdf, 0) : null
+        pageCount = pdf?.numPages ?? 0
       }
-      const first = pdf ? await pageInfo(pdf, 0) : null
-      const lf: LoadedFile = { name: f.name, bytes, pageCount: pdf?.numPages ?? 0, locked, pdf, first }
+      const lf: LoadedFile = { name: f.name, bytes, pageCount, locked, pdf, first }
       const o = typeof def.defaults === 'function' ? await (def.defaults as (f: LoadedFile) => Promise<O>)(lf) : def.defaults
       setFile(lf)
       setOpts(o)
@@ -121,7 +132,7 @@ export function SimpleTool<O>({ def }: { def: ToolDef<O> }) {
       <h1>{t(def.title)}</h1>
       <p className="lead">{t(def.lead)}</p>
       {!file || opts === null ? (
-        <FileDrop accept="application/pdf,.pdf" title={t('Choose a PDF file')} hint={t('or drop it here · processed locally in your browser')} onFiles={(f) => open(f[0])} />
+        <FileDrop accept={def.accept ?? 'application/pdf,.pdf'} title={def.acceptTitle ? t(def.acceptTitle) : t('Choose a PDF file')} hint={t('or drop it here · processed locally in your browser')} onFiles={(f) => open(f[0])} />
       ) : (
         <div className="simple-tool">
           <div className="st-file">
@@ -129,7 +140,7 @@ export function SimpleTool<O>({ def }: { def: ToolDef<O> }) {
               {file.pdf && file.first ? (
                 <PdfCanvas pdf={file.pdf} index={0} width={file.first.width} height={file.first.height} scale={90 / Math.max(file.first.width, file.first.height)} />
               ) : (
-                <Icon name="lock" size={28} />
+                <Icon name={file.locked ? 'lock' : def.icon} size={28} />
               )}
             </div>
             <div className="st-meta">
@@ -142,7 +153,7 @@ export function SimpleTool<O>({ def }: { def: ToolDef<O> }) {
             </div>
             <label className="link">
               {t('Choose another file')}
-              <input type="file" accept="application/pdf,.pdf" hidden onChange={(e) => e.target.files?.[0] && open(e.target.files[0])} />
+              <input type="file" accept={def.accept ?? 'application/pdf,.pdf'} hidden onChange={(e) => e.target.files?.[0] && open(e.target.files[0])} />
             </label>
           </div>
           {def.Options && <div className="st-options">{def.Options({ value: opts, set: setOpts, file, t })}</div>}

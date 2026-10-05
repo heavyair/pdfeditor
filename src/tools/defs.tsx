@@ -502,6 +502,100 @@ export const extractImagesTool: ToolDef<Record<string, never>> = {
   },
 }
 
+// ───────────────────────────────────────────────────────── office <-> pdf
+
+interface OfficeOpts {
+  page: 'A4' | 'Letter'
+  orientation: 'portrait' | 'landscape'
+}
+
+const officeOptions = (value: OfficeOpts, set: (o: OfficeOpts) => void, t: (k: string) => string) => (
+  <>
+    <Field label={t('Page size')}>
+      <Segmented value={value.page} onChange={(page) => set({ ...value, page })} options={[['A4', 'A4'], ['Letter', 'Letter']]} />
+    </Field>
+    <Field label={t('Orientation')}>
+      <Segmented
+        value={value.orientation}
+        onChange={(orientation) => set({ ...value, orientation })}
+        options={[['portrait', t('Portrait')], ['landscape', t('Landscape')]]}
+      />
+    </Field>
+  </>
+)
+
+export const excelToPdfTool: ToolDef<OfficeOpts> = {
+  id: 'excel-to-pdf',
+  title: 'Excel to PDF',
+  lead: 'Convert spreadsheets (.xlsx, .xls, .csv) to PDF. Each worksheet becomes nicely formatted table pages.',
+  icon: 'grid',
+  action: 'Convert & download',
+  accept: '.xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv',
+  acceptTitle: 'Choose a spreadsheet file',
+  skipPdfParse: true,
+  defaults: { page: 'A4', orientation: 'landscape' },
+  Options: ({ value, set, t }) => officeOptions(value, set, t),
+  run: async (f, o, t) => {
+    const { excelToPdf } = await import('../lib/office')
+    const { pdf, sheets } = await excelToPdf(f.bytes, o)
+    return { files: [{ name: outputName(f, 'converted'), bytes: pdf }], note: t('{n} worksheets converted', { n: sheets }) }
+  },
+}
+
+export const wordToPdfTool: ToolDef<OfficeOpts> = {
+  id: 'word-to-pdf',
+  title: 'Word to PDF',
+  lead: 'Convert Word documents (.docx) to PDF, keeping text, tables, lists and images.',
+  icon: 'textFile',
+  action: 'Convert & download',
+  accept: '.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  acceptTitle: 'Choose a Word file',
+  skipPdfParse: true,
+  defaults: { page: 'A4', orientation: 'portrait' },
+  Options: ({ value, set, t }) => officeOptions(value, set, t),
+  run: async (f, o) => {
+    const { wordToPdf } = await import('../lib/office')
+    const pdf = await wordToPdf(f.bytes, o)
+    return { files: [{ name: outputName(f, 'converted'), bytes: pdf }] }
+  },
+}
+
+export const pdfToExcelTool: ToolDef<Record<string, never>> = {
+  id: 'pdf-to-excel',
+  title: 'PDF to Excel',
+  lead: 'Extract tables and text into an .xlsx workbook — one worksheet per page. Best with text-based PDFs.',
+  icon: 'grid',
+  action: 'Convert & download',
+  defaults: {},
+  run: async (f, _o, t) => {
+    if (!f.pdf) throw new Error(t('"{name}" is not a valid PDF', { name: f.name }))
+    const { pdfToExcel } = await import('../lib/office')
+    const { xlsx, pages } = await pdfToExcel(f.pdf)
+    return {
+      files: [{ name: outputName(f, 'converted', 'xlsx'), bytes: xlsx, mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }],
+      note: t('{n} pages converted', { n: pages }),
+    }
+  },
+}
+
+export const pdfToWordTool: ToolDef<Record<string, never>> = {
+  id: 'pdf-to-word',
+  title: 'PDF to Word',
+  lead: 'Extract text into an editable .docx document, keeping reading order and page breaks. Best with text-based PDFs.',
+  icon: 'textFile',
+  action: 'Convert & download',
+  defaults: {},
+  run: async (f, _o, t) => {
+    if (!f.pdf) throw new Error(t('"{name}" is not a valid PDF', { name: f.name }))
+    const { pdfToWord } = await import('../lib/office')
+    const { docx, pages } = await pdfToWord(f.pdf)
+    return {
+      files: [{ name: outputName(f, 'converted', 'docx'), bytes: docx, mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }],
+      note: t('{n} pages converted', { n: pages }),
+    }
+  },
+}
+
 // ───────────────────────────────────────────────────────── flatten / repair
 
 export const flattenTool: ToolDef<Record<string, never>> = {
