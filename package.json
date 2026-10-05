@@ -27,13 +27,16 @@
     "@tesseract.js-data/por": "^1.0.0",
     "@tesseract.js-data/rus": "^1.0.0",
     "@tesseract.js-data/spa": "^1.0.0",
+    "docx": "^9.7.2",
     "jszip": "^3.10.2",
+    "mammoth": "^1.12.3",
     "mupdf": "^1.28.1",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.3.289",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "tesseract.js": "^7.0.0"
+    "tesseract.js": "^7.0.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
