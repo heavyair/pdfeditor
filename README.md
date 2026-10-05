@@ -21,7 +21,7 @@ No uploads, no account, no watermark. English and 简体中文 UI.
 visual page organizer (reorder, rotate, duplicate, delete, insert blank or from another PDF, reverse) ·
 rotate · delete pages · crop · N-up (2/4/6/9 per sheet)
 
-**Convert** – PDF → JPG/PNG · images → PDF · PDF → text · extract embedded images
+**Convert** – PDF → JPG/PNG · images → PDF · PDF → text · extract embedded images · Excel/Word ⇄ PDF (all local, no uploads)
 
 **Optimize & secure** – compress (lossless / balanced / strong / extreme) · protect (AES-256 + permissions) ·
 unlock · flatten · repair · edit or wipe metadata
@@ -115,7 +115,7 @@ src/
   reuse the document's embedded (usually subsetted) font.
 - Redaction of a region inside an image blanks those pixels (MuPDF), other images are untouched.
 - Signatures are visual (like ink on paper), not cryptographic (PAdES) digital signatures.
-- Converting PDF to Word/Excel is not included.
+- PDF ↔ Word/Excel conversion runs fully locally in the browser (no uploads).
 
 ## License note
 
